@@ -1,0 +1,44 @@
+name: MFN to Discord
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub may delay this by a few minutes under load -
+    # that's a platform limitation, not something this workflow controls.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mfn-discord
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Check MFN and notify Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # Uncomment and edit to watch a single company instead of the
+          # whole Nordic feed, e.g.:
+          # MFN_URL: https://mfn.se/all/a/carasent
+        run: python mfn_notifier.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name "mfn-discord-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || git commit -m "Update MFN state [skip ci]"
+          git push
