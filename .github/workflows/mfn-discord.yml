@@ -33,6 +33,14 @@ jobs:
           # Uncomment and edit to watch a single company instead of the
           # whole Nordic feed, e.g.:
           # MFN_URL: https://mfn.se/all/a/carasent
+          # Quiet hours: only post to Discord between 17:30 and 09:00
+          # Swedish time. Items found outside this window are queued and
+          # delivered as soon as the window opens - nothing is lost, just
+          # delayed. Remove both lines to go back to posting immediately
+          # around the clock.
+          ACTIVE_START: "17:30"
+          ACTIVE_END: "09:00"
+          TIMEZONE: "Europe/Stockholm"
         run: python mfn_notifier.py
 
       - name: Commit updated state
