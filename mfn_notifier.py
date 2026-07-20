@@ -5,8 +5,8 @@ Checks MFN.se for new press releases and posts them to a Discord channel via web
 Runs statelessly on each invocation: reads state.json from the repo checkout,
 compares against the current front page of mfn.se, and posts new items to
 Discord - but only during a configurable daily active window. Items found
-outside the window are queued and delivered as soon as the window opens
-again, so nothing is ever lost, just delayed.
+outside the window are simply skipped (marked seen, never posted) - this
+is a quiet-hours filter, not a delivery delay.
 
 Environment variables:
   DISCORD_WEBHOOK_URL   required - the Discord webhook to post to
@@ -42,10 +42,6 @@ TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Stockholm"))
 ACTIVE_START = os.environ.get("ACTIVE_START")
 ACTIVE_END = os.environ.get("ACTIVE_END")
 MAX_SEEN_IDS = 2000
-# Safety cap: never blast more than this many messages in a single run
-# (protects against a bad parse, and smooths out a big overnight backlog
-# over several 5-minute ticks instead of dumping it all at once).
-MAX_POSTS_PER_RUN = 25
 
 
 def _parse_hhmm(s):
@@ -106,12 +102,10 @@ def fetch_items():
 def load_state():
     if STATE_FILE.exists():
         try:
-            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            state.setdefault("pending", [])
-            return state
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             pass
-    return {"seen_ids": [], "pending": [], "bootstrapped": False}
+    return {"seen_ids": [], "bootstrapped": False}
 
 
 def save_state(state):
@@ -154,31 +148,25 @@ def main():
         print(f"Bootstrapped with {len(items)} existing items, no messages sent.")
         return
 
-    # Newly discovered items go into the pending queue (oldest first so the
-    # channel reads chronologically), regardless of whether we're allowed to
-    # post right now.
     new_items = [it for it in items if it["id"] not in seen]
+    # Oldest first, so the channel reads chronologically.
     new_items.reverse()
-    for it in new_items:
-        seen.add(it["id"])
-        state["seen_ids"].append(it["id"])
-        state["pending"].append(it)
 
     active = in_active_window()
     posted = 0
-    if active:
-        to_post = state["pending"][:MAX_POSTS_PER_RUN]
-        for it in to_post:
+    for it in new_items:
+        seen.add(it["id"])
+        state["seen_ids"].append(it["id"])
+        # Outside the active window, items are marked seen and dropped for
+        # good - not queued, not delivered later. Only items published
+        # while the window is open get posted.
+        if active:
             post_to_discord(it)
             posted += 1
-        state["pending"] = state["pending"][len(to_post):]
 
     save_state(state)
-    window_note = "" if active else " (outside active window, queued)"
-    print(
-        f"Found {len(new_items)} new item(s). Posted {posted}{window_note}. "
-        f"{len(state['pending'])} still pending."
-    )
+    window_note = "" if active else " (outside active window, skipped)"
+    print(f"Found {len(new_items)} new item(s). Posted {posted}{window_note}.")
 
 
 if __name__ == "__main__":
