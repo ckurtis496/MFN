@@ -2,16 +2,25 @@
 """
 Checks MFN.se for new press releases and posts them to a Discord channel via webhook.
 
-Runs statelessly on each invocation: reads state.json (list of already-notified
-item ids) from the repo checkout, compares against the current front page of
-mfn.se, posts any new items to Discord, then rewrites state.json so the
-GitHub Actions workflow can commit it back.
+Runs statelessly on each invocation: reads state.json from the repo checkout,
+compares against the current front page of mfn.se, and posts new items to
+Discord - but only during a configurable daily active window. Items found
+outside the window are queued and delivered as soon as the window opens
+again, so nothing is ever lost, just delayed.
 
 Environment variables:
   DISCORD_WEBHOOK_URL   required - the Discord webhook to post to
   MFN_URL               optional - defaults to the full https://mfn.se/all feed.
                          Point this at e.g. https://mfn.se/all/a/carasent to
                          watch a single company instead of the whole market.
+  ACTIVE_START           optional - "HH:MM", start of the daily active window.
+  ACTIVE_END             optional - "HH:MM", end of the daily active window.
+                         If ACTIVE_START > ACTIVE_END the window wraps past
+                         midnight (e.g. 17:30 -> 09:00 means "active in the
+                         evening/night/early morning, quiet during the day").
+                         Leave both unset to always post immediately (no
+                         quiet hours).
+  TIMEZONE               optional - IANA tz name, defaults to Europe/Stockholm.
 """
 
 import json
@@ -19,18 +28,44 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, time as dtime
 from html import unescape
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 
 STATE_FILE = Path(__file__).parent / "state.json"
 MFN_URL = os.environ.get("MFN_URL", "https://mfn.se/all")
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-MAX_SEEN_IDS = 1000
+TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Stockholm"))
+ACTIVE_START = os.environ.get("ACTIVE_START")
+ACTIVE_END = os.environ.get("ACTIVE_END")
+MAX_SEEN_IDS = 2000
 # Safety cap: never blast more than this many messages in a single run
-# (protects against a bad parse or a huge backlog flooding the channel).
+# (protects against a bad parse, and smooths out a big overnight backlog
+# over several 5-minute ticks instead of dumping it all at once).
 MAX_POSTS_PER_RUN = 25
+
+
+def _parse_hhmm(s):
+    h, m = s.split(":")
+    return dtime(int(h), int(m))
+
+
+def in_active_window(now=None):
+    """True if 'now' (Europe/Stockholm by default) falls in the configured
+    active window. No window configured => always active."""
+    if not ACTIVE_START or not ACTIVE_END:
+        return True
+    now = now or datetime.now(TIMEZONE)
+    start = _parse_hhmm(ACTIVE_START)
+    end = _parse_hhmm(ACTIVE_END)
+    t = now.time()
+    if start <= end:
+        return start <= t < end
+    # Window wraps past midnight, e.g. 17:30 -> 09:00
+    return t >= start or t < end
 
 ITEM_RE = re.compile(
     r'<div class="short-item[^"]*"\s+id="([0-9a-fA-F-]{36})"[^>]*'
@@ -71,10 +106,12 @@ def fetch_items():
 def load_state():
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            state.setdefault("pending", [])
+            return state
         except json.JSONDecodeError:
             pass
-    return {"seen_ids": [], "bootstrapped": False}
+    return {"seen_ids": [], "pending": [], "bootstrapped": False}
 
 
 def save_state(state):
@@ -117,19 +154,31 @@ def main():
         print(f"Bootstrapped with {len(items)} existing items, no messages sent.")
         return
 
+    # Newly discovered items go into the pending queue (oldest first so the
+    # channel reads chronologically), regardless of whether we're allowed to
+    # post right now.
     new_items = [it for it in items if it["id"] not in seen]
-    # Oldest first, so the channel reads chronologically.
     new_items.reverse()
-
-    posted = 0
-    for it in new_items[:MAX_POSTS_PER_RUN]:
-        post_to_discord(it)
+    for it in new_items:
         seen.add(it["id"])
         state["seen_ids"].append(it["id"])
-        posted += 1
+        state["pending"].append(it)
+
+    active = in_active_window()
+    posted = 0
+    if active:
+        to_post = state["pending"][:MAX_POSTS_PER_RUN]
+        for it in to_post:
+            post_to_discord(it)
+            posted += 1
+        state["pending"] = state["pending"][len(to_post):]
 
     save_state(state)
-    print(f"Posted {posted} new item(s) of {len(new_items)} found.")
+    window_note = "" if active else " (outside active window, queued)"
+    print(
+        f"Found {len(new_items)} new item(s). Posted {posted}{window_note}. "
+        f"{len(state['pending'])} still pending."
+    )
 
 
 if __name__ == "__main__":
