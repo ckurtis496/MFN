@@ -4,9 +4,12 @@ Checks MFN.se for new press releases and posts them to a Discord channel via web
 
 Runs statelessly on each invocation: reads state.json from the repo checkout,
 compares against the current front page of mfn.se, and posts new items to
-Discord - but only during a configurable daily active window. Items found
-outside the window are simply skipped (marked seen, never posted) - this
-is a quiet-hours filter, not a delivery delay.
+Discord - but only if the item's OWN publish time falls in a configurable
+daily active window. Items published outside the window are simply skipped
+(marked seen, never posted) - this is a quiet-hours filter, not a delivery
+delay. The window is judged by publish time rather than script-run time
+because GitHub's schedule trigger is not reliably every 5 minutes in
+practice (it can be delayed by hours) - see README for details.
 
 Environment variables:
   DISCORD_WEBHOOK_URL   required - the Discord webhook to post to
@@ -49,19 +52,41 @@ def _parse_hhmm(s):
     return dtime(int(h), int(m))
 
 
-def in_active_window(now=None):
-    """True if 'now' (Europe/Stockholm by default) falls in the configured
-    active window. No window configured => always active."""
+def _in_window(t):
+    """True if time-of-day 't' falls in the configured active window.
+    No window configured => always active."""
     if not ACTIVE_START or not ACTIVE_END:
         return True
-    now = now or datetime.now(TIMEZONE)
     start = _parse_hhmm(ACTIVE_START)
     end = _parse_hhmm(ACTIVE_END)
-    t = now.time()
     if start <= end:
         return start <= t < end
     # Window wraps past midnight, e.g. 17:30 -> 09:00
     return t >= start or t < end
+
+
+def in_active_window(now=None):
+    """True if 'now' (Europe/Stockholm by default) falls in the configured
+    active window. Used only as a fallback when an item has no parseable
+    publish time."""
+    now = now or datetime.now(TIMEZONE)
+    return _in_window(now.time())
+
+
+def item_published_in_window(item):
+    """Judge the window using the press release's OWN publish time (as
+    shown on mfn.se, already in Europe/Stockholm), not the time the script
+    happens to run. This matters because GitHub's schedule trigger can be
+    delayed by hours, so an item published at 16:45 might not be *found*
+    until 19:00 - it must still be treated as a daytime (quiet-hours) item,
+    not an evening one."""
+    try:
+        h, m = item["time"].split(":")[:2]
+        return _in_window(dtime(int(h), int(m)))
+    except (KeyError, ValueError):
+        # Malformed timestamp: fall back to current time rather than
+        # silently dropping or silently posting.
+        return in_active_window()
 
 ITEM_RE = re.compile(
     r'<div class="short-item[^"]*"\s+id="([0-9a-fA-F-]{36})"[^>]*'
@@ -152,21 +177,25 @@ def main():
     # Oldest first, so the channel reads chronologically.
     new_items.reverse()
 
-    active = in_active_window()
     posted = 0
+    skipped = 0
     for it in new_items:
         seen.add(it["id"])
         state["seen_ids"].append(it["id"])
-        # Outside the active window, items are marked seen and dropped for
-        # good - not queued, not delivered later. Only items published
-        # while the window is open get posted.
-        if active:
+        # Judged by the item's OWN publish time, not by when this script
+        # happens to run - items published during quiet hours are marked
+        # seen and dropped for good, never queued or delivered later.
+        if item_published_in_window(it):
             post_to_discord(it)
             posted += 1
+        else:
+            skipped += 1
 
     save_state(state)
-    window_note = "" if active else " (outside active window, skipped)"
-    print(f"Found {len(new_items)} new item(s). Posted {posted}{window_note}.")
+    print(
+        f"Found {len(new_items)} new item(s). Posted {posted}, "
+        f"skipped {skipped} (published outside active window)."
+    )
 
 
 if __name__ == "__main__":
