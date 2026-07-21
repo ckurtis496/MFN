@@ -30,14 +30,15 @@ jobs:
       - name: Check MFN and notify Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          # Uncomment and edit to watch a single company instead of the
-          # whole Nordic feed, e.g.:
-          # MFN_URL: https://mfn.se/all/a/carasent
+          # Full Nordic feed (broader than the default /all page, which was
+          # missing several items - e.g. it excluded the evening feed
+          # entirely on some days). Switch back to plain https://mfn.se/all
+          # or narrow to a single company (e.g. https://mfn.se/all/a/carasent)
+          # if desired.
+          MFN_URL: https://mfn.se/all/s/nordic
           # Quiet hours: only post to Discord between 17:30 and 09:00
-          # Swedish time. Items found outside this window are queued and
-          # delivered as soon as the window opens - nothing is lost, just
-          # delayed. Remove both lines to go back to posting immediately
-          # around the clock.
+          # Swedish time. Items published outside this window are marked
+          # seen and dropped for good, never queued or delivered later.
           ACTIVE_START: "17:30"
           ACTIVE_END: "09:00"
           TIMEZONE: "Europe/Stockholm"
