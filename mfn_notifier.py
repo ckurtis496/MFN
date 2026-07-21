@@ -12,7 +12,12 @@ because GitHub's schedule trigger is not reliably every 5 minutes in
 practice (it can be delayed by hours) - see README for details.
 
 Environment variables:
-  DISCORD_WEBHOOK_URL   required - the Discord webhook to post to
+  DISCORD_WEBHOOK_URL     required - the Discord webhook for the quiet-hours
+                          channel (respects ACTIVE_START/ACTIVE_END below).
+  DISCORD_WEBHOOK_URL_24_7 optional - a second Discord webhook that receives
+                          every new item around the clock, with no quiet-hours
+                          filtering at all. Leave unset to only run the one
+                          channel.
   MFN_URL               optional - defaults to the full https://mfn.se/all feed.
                          Point this at e.g. https://mfn.se/all/a/carasent to
                          watch a single company instead of the whole market.
@@ -22,7 +27,8 @@ Environment variables:
                          midnight (e.g. 17:30 -> 09:00 means "active in the
                          evening/night/early morning, quiet during the day").
                          Leave both unset to always post immediately (no
-                         quiet hours).
+                         quiet hours). Only affects DISCORD_WEBHOOK_URL, not
+                         DISCORD_WEBHOOK_URL_24_7.
   TIMEZONE               optional - IANA tz name, defaults to Europe/Stockholm.
 """
 
@@ -41,6 +47,7 @@ import requests
 STATE_FILE = Path(__file__).parent / "state.json"
 MFN_URL = os.environ.get("MFN_URL", "https://mfn.se/all")
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+WEBHOOK_URL_24_7 = os.environ.get("DISCORD_WEBHOOK_URL_24_7")
 TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Stockholm"))
 ACTIVE_START = os.environ.get("ACTIVE_START")
 ACTIVE_END = os.environ.get("ACTIVE_END")
@@ -138,16 +145,16 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def post_to_discord(item):
+def post_to_discord(item, webhook_url):
     payload = {
         "content": f"**{item['company']}**\n{item['title']}\n{item['url']}",
     }
-    r = requests.post(WEBHOOK_URL, json=payload, timeout=15)
+    r = requests.post(webhook_url, json=payload, timeout=15)
     # Discord rate limit: leave a little breathing room between messages.
     if r.status_code == 429:
         retry_after = r.json().get("retry_after", 1)
         time.sleep(float(retry_after) + 0.5)
-        r = requests.post(WEBHOOK_URL, json=payload, timeout=15)
+        r = requests.post(webhook_url, json=payload, timeout=15)
     r.raise_for_status()
 
 
@@ -179,22 +186,31 @@ def main():
 
     posted = 0
     skipped = 0
+    posted_24_7 = 0
     for it in new_items:
         seen.add(it["id"])
         state["seen_ids"].append(it["id"])
-        # Judged by the item's OWN publish time, not by when this script
-        # happens to run - items published during quiet hours are marked
-        # seen and dropped for good, never queued or delivered later.
+
+        # The 24/7 channel gets every new item, no quiet-hours filter at all.
+        if WEBHOOK_URL_24_7:
+            post_to_discord(it, WEBHOOK_URL_24_7)
+            posted_24_7 += 1
+
+        # The quiet-hours channel is judged by the item's OWN publish time,
+        # not by when this script happens to run - items published during
+        # quiet hours are marked seen and dropped for good on this channel,
+        # never queued or delivered later.
         if item_published_in_window(it):
-            post_to_discord(it)
+            post_to_discord(it, WEBHOOK_URL)
             posted += 1
         else:
             skipped += 1
 
     save_state(state)
     print(
-        f"Found {len(new_items)} new item(s). Posted {posted}, "
-        f"skipped {skipped} (published outside active window)."
+        f"Found {len(new_items)} new item(s). Quiet-hours channel: posted "
+        f"{posted}, skipped {skipped} (outside active window). "
+        f"24/7 channel: posted {posted_24_7}."
     )
 
 
