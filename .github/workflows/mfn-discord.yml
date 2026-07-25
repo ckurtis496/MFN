@@ -17,6 +17,10 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # If GitHub's hosted-runner infra hiccups (a known, occasional platform
+    # issue - "job was not acquired by Runner"), fail fast instead of
+    # blocking the next 5-minute tick behind a 15+ minute stuck run.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
