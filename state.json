@@ -1,7 +1,5 @@
 {
   "seen_ids": [
-    "c1d1f28a-966f-4d8e-a703-0e56b92c9d0b",
-    "98a0f950-8713-40fe-a45c-fbf9b5726503",
     "20aca8ce-cf39-4790-ab98-68941d8791b4",
     "067f8f04-03f7-5a25-b0e6-f1074996c799",
     "5a07539f-281f-541d-af3f-ab008630bdcf",
@@ -1999,7 +1997,9 @@
     "ae9e521c-7bb3-453f-bf41-1d9fe6acfe7d",
     "331aff19-c503-45cc-92f5-f5c3e2163e70",
     "443b3c86-7e93-49bc-875f-5a8dc57998cc",
-    "6ba67a8d-80e6-45d8-896a-409d7c65e2f2"
+    "6ba67a8d-80e6-45d8-896a-409d7c65e2f2",
+    "bf6e06f6-cc41-4c86-926e-274ccc7862f4",
+    "df4ecfbc-3319-47f7-baf4-3d7abc71a6fa"
   ],
   "bootstrapped": true
 }
